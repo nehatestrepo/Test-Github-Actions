@@ -1,0 +1,8 @@
+schema_version: "1.0"
+l1_release_id: "0.0.1-dummy"
+l1_manifest_digest: "sha256:dummy"
+pinned_at: "2026-10-15T00:00:00Z"
+pinned_by: "manual-setup"
+accepted_by: "Neha2595"
+images: {}
+bundles: {}

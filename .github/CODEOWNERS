@@ -1,0 +1,14 @@
+# Default: anything not listed below
+*                     @nehatestrepo/platform-team
+
+# Workflows (how we copy/deploy)
+/.github/workflows/   @nehatestrepo/platform-team
+
+# The review rules themselves
+/.github/CODEOWNERS   @nehatestrepo/platform-team
+
+# Helper scripts, e.g. GREEN/AMBER/RED compare
+/scripts/             @nehatestrepo/platform-team
+
+# Pinned AI Vista version (accepting a release)
+/l1.lock              @nehatestrepo/release-approvers
