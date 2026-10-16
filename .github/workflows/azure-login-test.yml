@@ -1,0 +1,44 @@
+name: Azure login test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  azure-login-test:
+    runs-on: ${{ vars.RUNNER_LABEL }}
+    steps:
+      - name: Show configuration (no secrets)
+        run: |
+          echo "DEMO_MODE:       ${{ vars.DEMO_MODE }}"
+          echo "Source registry: ${{ vars.SOURCE_REGISTRY }}"
+          echo "Our registry:    ${{ vars.OUR_REGISTRY }}"
+          echo "Region:          ${{ vars.AZURE_REGION }}"
+          echo "Ledger repo:     ${{ vars.LEDGER_REPO }}"
+
+      - name: Check the Azure secret exists
+        env:
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          if [ -z "$AZURE_CLIENT_SECRET" ]; then
+            echo "AZURE_CLIENT_SECRET is missing"; exit 1
+          fi
+          echo "AZURE_CLIENT_SECRET is present"
+
+      - name: Demo mode
+        if: ${{ vars.DEMO_MODE == 'true' }}
+        run: echo "DEMO_MODE is true, so the real Azure login is skipped."
+
+      - name: Azure login
+        if: ${{ vars.DEMO_MODE != 'true' }}
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          creds: '{"clientId":"${{ vars.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ vars.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ vars.AZURE_TENANT_ID }}"}'
+
+      - name: Check registry access
+        if: ${{ vars.DEMO_MODE != 'true' }}
+        run: |
+          az acr show --name "${{ vars.SOURCE_REGISTRY }}" --query name -o tsv
+          az acr show --name "${{ vars.OUR_REGISTRY }}" --query name -o tsv
