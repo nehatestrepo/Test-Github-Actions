@@ -1,0 +1,76 @@
+name: L1 release check
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # every day at 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      demo_latest_version:
+        description: "Demo mode only: pretend this is the newest AI Vista version"
+        required: false
+        default: "0.0.2-dummy"
+
+permissions:
+  contents: read
+
+jobs:
+  release-check:
+    runs-on: ${{ vars.RUNNER_LABEL }}
+    steps:
+      - name: Get repo files
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read the current version from l1.lock
+        id: current
+        run: |
+          VERSION=$(grep '^l1_release_id:' l1.lock | cut -d'"' -f2)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Current version: $VERSION"
+
+      - name: Azure login
+        if: ${{ vars.DEMO_MODE != 'true' }}
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          creds: '{"clientId":"${{ vars.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ vars.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ vars.AZURE_TENANT_ID }}"}'
+
+      - name: Find the newest version
+        id: latest
+        env:
+          DEMO_LATEST: ${{ inputs.demo_latest_version }}
+        run: |
+          if [ "${{ vars.DEMO_MODE }}" = "true" ]; then
+            LATEST="${DEMO_LATEST:-0.0.2-dummy}"
+          else
+            LATEST=$(az acr repository show-tags \
+              --name "${{ vars.SOURCE_REGISTRY }}" \
+              --repository aivista-release-manifest \
+              --orderby time_desc --top 1 -o tsv)
+          fi
+          echo "version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Newest version: $LATEST"
+
+      - name: Compare
+        id: compare
+        run: |
+          CURRENT="${{ steps.current.outputs.version }}"
+          LATEST="${{ steps.latest.outputs.version }}"
+          if [ "$LATEST" != "$CURRENT" ]; then
+            echo "new=true" >> "$GITHUB_OUTPUT"
+            echo "New AI Vista release available: $LATEST (current: $CURRENT)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            echo "Up to date: $CURRENT" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Notify the team
+        if: ${{ steps.compare.outputs.new == 'true' }}
+        env:
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: |
+          MESSAGE="New AI Vista release ${{ steps.latest.outputs.version }} is available (current: ${{ steps.current.outputs.version }}). Start the intake if we want it."
+          if [ "${{ vars.DEMO_MODE }}" = "true" ]; then
+            echo "DEMO_MODE: would send to Teams: $MESSAGE"
+          else
+            curl -sS -X POST -H "Content-Type: application/json" \
+              -d "{\"text\":\"$MESSAGE\"}" "$TEAMS_WEBHOOK_URL"
+          fi
