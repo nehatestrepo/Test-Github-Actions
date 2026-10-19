@@ -1,0 +1,106 @@
+name: L1 intake
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "AI Vista version to take in (for example 1.19.0)"
+        required: true
+      demo_verdict:
+        description: "Demo mode only: pretend the comparison result"
+        type: choice
+        options: [GREEN, AMBER, RED]
+        default: GREEN
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: l1-intake
+  cancel-in-progress: false
+
+env:
+  VERSION: ${{ inputs.version }}
+  VERDICT: ${{ inputs.demo_verdict }}
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  intake:
+    runs-on: ${{ vars.RUNNER_LABEL }}
+    steps:
+      - name: Check the version is exact
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]] || {
+            echo "::error::'$VERSION' is not an exact version like 1.19.0"; exit 1; }
+
+      - name: Get repo files
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Azure login
+        if: ${{ vars.DEMO_MODE != 'true' }}
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          creds: '{"clientId":"${{ vars.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ vars.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ vars.AZURE_TENANT_ID }}"}'
+
+      - name: Get the release manifest
+        run: |
+          mkdir -p release
+          if [ "${{ vars.DEMO_MODE }}" = "true" ]; then
+            jq -n --arg v "$VERSION" '{version:$v, artifacts:[
+              {name:"aivista-api", digest:("sha256:demo-api-"+$v)},
+              {name:"terraform-platform-azure", digest:("sha256:demo-tf-"+$v)}]}' > release/manifest.json
+            echo "DEMO_MODE: using a pretend manifest for $VERSION"
+          else
+            echo "::error::Real mode is not built yet (waiting for the registry access decision)"; exit 1
+          fi
+
+      - name: Copy the release into our registry
+        run: |
+          jq -r '.artifacts[] | "\(.name) \(.digest)"' release/manifest.json |
+          while read -r NAME DIGEST; do
+            echo "DEMO_MODE: would copy $NAME ($DIGEST) from ${{ vars.SOURCE_REGISTRY }} to ${{ vars.OUR_REGISTRY }}"
+          done
+
+      - name: Compare with the current version
+        run: |
+          CURRENT=$(grep '^l1_release_id:' l1.lock | cut -d'"' -f2)
+          {
+            echo "## AI Vista intake report"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Current version | $CURRENT |"
+            echo "| Proposed version | $VERSION |"
+            echo "| Result | **$VERDICT** (demo: chosen by hand) |"
+            echo
+            echo "GREEN = safe, AMBER = review, RED = needs a code change before we accept it."
+          } > compat-report.md
+          cat compat-report.md >> "$GITHUB_STEP_SUMMARY"
+          if [ "$VERDICT" = "RED" ]; then
+            echo "::error::RED result: stopping. No pull request is opened."; exit 1
+          fi
+
+      - name: Write the proposed l1.lock
+        run: |
+          DIGEST=$(sha256sum release/manifest.json | cut -d' ' -f1)
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          sed -i \
+            -e "s|^l1_release_id:.*|l1_release_id: \"$VERSION\"|" \
+            -e "s|^l1_manifest_digest:.*|l1_manifest_digest: \"sha256:$DIGEST\"|" \
+            -e "s|^pinned_at:.*|pinned_at: \"$NOW\"|" \
+            -e "s|^pinned_by:.*|pinned_by: \"run://l1-intake/${{ github.run_id }}\"|" \
+            l1.lock
+
+      - name: Open the pull request
+        run: |
+          BRANCH="intake/aivista-$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add l1.lock
+          git commit -m "Propose AI Vista $VERSION (intake run ${{ github.run_number }})"
+          git push --force origin "$BRANCH"
+          gh pr create --base main --head "$BRANCH" \
+            --title "Adopt AI Vista $VERSION ($VERDICT)" \
+            --body-file compat-report.md
