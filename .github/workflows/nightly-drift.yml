@@ -1,0 +1,111 @@
+name: Nightly drift check
+
+on:
+  schedule:
+    - cron: "0 2 * * *"   # every night at 02:00 UTC
+  workflow_dispatch:
+    inputs:
+      demo_drift_env:
+        description: "Demo mode only: pretend this environment was changed by hand"
+        type: choice
+        options: [none, dev, qa, demo]
+        default: none
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: nightly-drift
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    runs-on: ${{ vars.RUNNER_LABEL }}
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, qa, demo]
+    env:
+      ENVIRONMENT: ${{ matrix.environment }}
+      DEMO_DRIFT_ENV: ${{ inputs.demo_drift_env }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Azure login
+        if: ${{ vars.DEMO_MODE != 'true' }}
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          creds: '{"clientId":"${{ vars.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ vars.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ vars.AZURE_TENANT_ID }}"}'
+
+      - name: Read the recorded version from the ledger repo
+        id: recorded
+        env:
+          LEDGER_TOKEN: ${{ secrets.LEDGER_TOKEN }}
+        run: |
+          git clone --depth 1 "https://x-access-token:${LEDGER_TOKEN}@github.com/${{ vars.LEDGER_REPO }}.git" ledger
+          if [ -f "ledger/$ENVIRONMENT.json" ]; then
+            VERSION=$(jq -r .version "ledger/$ENVIRONMENT.json")
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "$ENVIRONMENT: recorded version is $VERSION"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "$ENVIRONMENT: no record yet, nothing to check" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Find what is actually installed
+        id: actual
+        if: ${{ steps.recorded.outputs.found == 'true' }}
+        env:
+          RECORDED: ${{ steps.recorded.outputs.version }}
+        run: |
+          if [ "${{ vars.DEMO_MODE }}" = "true" ]; then
+            if [ "$DEMO_DRIFT_ENV" = "$ENVIRONMENT" ]; then
+              ACTUAL="changed-by-hand"
+            else
+              ACTUAL="$RECORDED"
+            fi
+            echo "DEMO_MODE: pretending the actual version in $ENVIRONMENT is $ACTUAL"
+            echo "version=$ACTUAL" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Real mode is not built yet (needs the Terraform plan and image digest checks)"; exit 1
+          fi
+
+      - name: Compare
+        id: compare
+        if: ${{ steps.recorded.outputs.found == 'true' }}
+        run: |
+          if [ "${{ steps.actual.outputs.version }}" != "${{ steps.recorded.outputs.version }}" ]; then
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+            echo "DRIFT in $ENVIRONMENT: recorded ${{ steps.recorded.outputs.version }}, actual ${{ steps.actual.outputs.version }}" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+            echo "$ENVIRONMENT: no drift (${{ steps.recorded.outputs.version }})" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Raise or update the drift issue
+        if: ${{ steps.compare.outputs.drift == 'true' }}
+        run: |
+          TITLE="Drift detected in $ENVIRONMENT"
+          BODY="Recorded version: ${{ steps.recorded.outputs.version }}. Actual: ${{ steps.actual.outputs.version }}. Decide: redeploy the approved release, or raise a proper release pull request. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          EXISTING=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --body "$BODY"
+          fi
+
+      - name: Notify the team
+        if: ${{ steps.compare.outputs.drift == 'true' }}
+        env:
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: |
+          MESSAGE="Drift detected in $ENVIRONMENT: recorded ${{ steps.recorded.outputs.version }}, actual ${{ steps.actual.outputs.version }}"
+          if [ "${{ vars.DEMO_MODE }}" = "true" ]; then
+            echo "DEMO_MODE: would send to Teams: $MESSAGE"
+          else
+            curl -sS -X POST -H "Content-Type: application/json" \
+              -d "{\"text\":\"$MESSAGE\"}" "$TEAMS_WEBHOOK_URL"
+          fi
+
