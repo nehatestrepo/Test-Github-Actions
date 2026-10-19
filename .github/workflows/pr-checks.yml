@@ -1,0 +1,46 @@
+name: PR checks
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ${{ vars.RUNNER_LABEL }}
+    steps:
+      - name: Get repo files
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check l1.lock is complete
+        run: |
+          fail=0
+          for key in schema_version l1_release_id l1_manifest_digest pinned_at pinned_by accepted_by images bundles; do
+            grep -q "^$key:" l1.lock || { echo "::error::l1.lock is missing '$key'"; fail=1; }
+          done
+          VERSION=$(grep '^l1_release_id:' l1.lock | cut -d'"' -f2)
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]] || {
+            echo "::error::l1_release_id '$VERSION' is not a valid version"; fail=1; }
+          exit $fail
+
+      - name: Check workflow files are valid YAML
+        run: |
+          fail=0
+          for f in .github/workflows/*.yml; do
+            yq '.' "$f" > /dev/null || { echo "::error::$f is not valid YAML"; fail=1; }
+          done
+          exit $fail
+
+      - name: Check every action is pinned to a full commit ID
+        run: |
+          BAD=$(grep -nE '^\s*(-\s*)?uses:\s*[^./][^@]*@' .github/workflows/*.yml \
+                | grep -vE '@[0-9a-f]{40}(\s|$)' || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::Actions must be pinned to a full commit ID:"
+            echo "$BAD"
+            exit 1
+          fi
+          echo "All actions are pinned."
