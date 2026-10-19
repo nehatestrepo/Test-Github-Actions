@@ -1,8 +1,8 @@
 schema_version: "1.0"
-l1_release_id: "0.0.1-dummy"
-l1_manifest_digest: "sha256:dummy"
-pinned_at: "2026-10-15T00:00:00Z"
-pinned_by: "manual-setup"
+l1_release_id: "0.0.2-dummy"
+l1_manifest_digest: "sha256:7b7354dee298cb7ab6329975bbdc9b7d051e8dcef85c18d415956f5001687711"
+pinned_at: "2026-10-19T07:29:32Z"
+pinned_by: "run://l1-intake/39216308314"
 accepted_by: "Neha2595"
 images: {}
 bundles: {}
